@@ -15,10 +15,10 @@
  */
 package nl.knaw.dans.easy.sword2
 
+import io.undertow.{ Handlers, Undertow }
+import io.undertow.servlet.Servlets
 import nl.knaw.dans.easy.sword2.servlets._
 import nl.knaw.dans.lib.logging.DebugEnhancedLogging
-import org.eclipse.jetty.server.Server
-import org.eclipse.jetty.servlet.ServletContextHandler
 
 import scala.util.Try
 
@@ -26,8 +26,6 @@ class EasySword2Service(val serverPort: Int, app: EasySword2App) extends DebugEn
 
   import logger._
 
-  private val server = new Server(serverPort)
-  val context = new ServletContextHandler(ServletContextHandler.NO_SESSIONS)
   // TODO: Refactor this so that we do not need access to the application's wiring from outside the object.
   val settings = Settings(
     depositRootDir = app.wiring.depositRootDir,
@@ -43,29 +41,34 @@ class EasySword2Service(val serverPort: Int, app: EasySword2App) extends DebugEn
     sample = app.wiring.sampleSettings,
     cleanup = app.wiring.cleanup,
   )
-  context.setAttribute(servlets.EASY_SWORD2_SETTINGS_ATTRIBUTE_KEY, settings)
 
-  /*
-   * Map URLs to servlets
-   */
-  context.addServlet(classOf[HelloServlet], "/hello")
-  context.addServlet(classOf[ServiceDocumentServletImpl], "/servicedocument")
-  context.addServlet(classOf[CollectionServletImpl], "/collection/*")
-  context.addServlet(classOf[ContainerServletImpl], "/container/*")
-  context.addServlet(classOf[MediaResourceServletImpl], "/media/*")
-  context.addServlet(classOf[StatementServletImpl], "/statement/*")
+  private val deployment = Servlets.deployment()
+    .setDeploymentName("App")
+    .setClassLoader(classOf[EasySword2Service].getClassLoader)
+    .setContextPath("/")
+    .addInitParameter("config-impl", classOf[SwordConfig].getName)
+    .addInitParameter("service-document-impl", classOf[ServiceDocumentManagerImpl].getName)
+    .addInitParameter("collection-deposit-impl", classOf[CollectionDepositManagerImpl].getName)
+    .addInitParameter("collection-list-impl", classOf[CollectionListManagerImpl].getName)
+    .addInitParameter("container-impl", classOf[ContainerManagerImpl].getName)
+    .addInitParameter("media-resource-impl", classOf[MediaResourceManagerImpl].getName)
+    .addInitParameter("statement-impl", classOf[StatementManagerImpl].getName)
+    .addServletContextAttribute(servlets.EASY_SWORD2_SETTINGS_ATTRIBUTE_KEY, settings)
+    .addServlet(Servlets.servlet("Hello", classOf[HelloServlet]).addMapping("/hello"))
+    .addServlet(Servlets.servlet("ServiceDocument", classOf[ServiceDocumentServletImpl]).addMapping("/servicedocument"))
+    .addServlet(Servlets.servlet("Collection", classOf[CollectionServletImpl]).addMapping("/collection/*"))
+    .addServlet(Servlets.servlet("Container", classOf[ContainerServletImpl]).addMapping("/container/*"))
+    .addServlet(Servlets.servlet("Media", classOf[MediaResourceServletImpl]).addMapping("/media/*"))
+    .addServlet(Servlets.servlet("Statement", classOf[StatementServletImpl]).addMapping("/statement/*"))
 
-  /*
-   * Specify classes that implement the SWORD 2.0 behavior.
-   */
-  context.setInitParameter("config-impl", classOf[SwordConfig].getName)
-  context.setInitParameter("service-document-impl", classOf[ServiceDocumentManagerImpl].getName)
-  context.setInitParameter("collection-deposit-impl", classOf[CollectionDepositManagerImpl].getName)
-  context.setInitParameter("collection-list-impl", classOf[CollectionListManagerImpl].getName)
-  context.setInitParameter("container-impl", classOf[ContainerManagerImpl].getName)
-  context.setInitParameter("media-resource-impl", classOf[MediaResourceManagerImpl].getName)
-  context.setInitParameter("statement-impl", classOf[StatementManagerImpl].getName)
-  server.setHandler(context)
+  private val manager = Servlets.defaultContainer().addDeployment(deployment)
+  manager.deploy()
+  private val pathHandler = Handlers.path().addPrefixPath("/", manager.start())
+  private val server = Undertow.builder()
+    .addHttpListener(serverPort, "0.0.0.0")
+    .setHandler(pathHandler)
+    .build()
+
   info(s"HTTP port is $serverPort")
 
   def start(): Try[Unit] = Try {
@@ -82,7 +85,6 @@ class EasySword2Service(val serverPort: Int, app: EasySword2App) extends DebugEn
   }
 
   def destroy(): Try[Unit] = Try {
-    server.destroy()
     app.close()
   }
 }
